@@ -7,6 +7,7 @@ import hashlib
 import os
 import tempfile
 import pandas as pd
+from datetime import datetime
 from supabase import create_client, Client
 
 # ================= CẤU HÌNH SUPABASE (DATABASE) =================
@@ -27,10 +28,22 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
+# Khôi phục phiên đăng nhập Supabase nếu đã có
+if 'access_token' in st.session_state and 'refresh_token' in st.session_state:
+    try:
+        supabase.auth.set_session(st.session_state['access_token'], st.session_state['refresh_token'])
+    except Exception:
+        pass
+
 # ================= CSS TÙY CHỈNH =================
 st.markdown("""
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Quicksand:wght@400;600;700;800&display=swap');
+
+        /* ẨN DÒNG CHỮ "Press Enter to apply" MẶC ĐỊNH */
+        div[data-testid="InputInstructions"] {
+            display: none !important;
+        }
 
         /* NGĂN CHẶN BÔI ĐEN VÀ ĐỔI CON TRỎ CHUỘT TOÀN BỘ TRANG */
         * {
@@ -56,7 +69,7 @@ st.markdown("""
         }
 
         html, body, [class*="css"] { font-family: 'Quicksand', sans-serif !important; }
-
+        
         .block-container { padding-top: 2rem !important; padding-bottom: 0.5rem !important; }
 
         /* Tiêu đề chính */
@@ -74,7 +87,7 @@ st.markdown("""
             line-height: 1.4;
         }
 
-        /* Tùy chỉnh Nút bấm Chính (Đăng nhập, Đăng ký, Phân tích) */
+        /* Tùy chỉnh Nút bấm Chính */
         button[kind="primary"] {
             border-radius: 10px;
             font-weight: 700;
@@ -93,16 +106,16 @@ st.markdown("""
             color: white;
         }
 
-        /* Tùy chỉnh Nút Đăng xuất: Đẩy lề trên xuống để không bị cắt viền */
+        /* Tùy chỉnh Nút Đăng xuất */
         button[kind="secondary"] {
             border-radius: 8px;
             font-weight: 700;
             color: #ff4b4b !important;
             border: 2px solid #ff4b4b !important;
             background: transparent !important;
-            padding: 0.3rem 1rem !important; /* Tạo khung vừa vặn ôm sát chữ */
+            padding: 0.3rem 1rem !important;
             transition: all 0.3s ease;
-            margin-top: 15px !important; /* Đẩy nút xuống để hiển thị full viền trên */
+            margin-top: 15px !important;
         }
         button[kind="secondary"]:hover {
             background: #ff4b4b !important;
@@ -117,7 +130,7 @@ st.markdown("""
             background-color: #ffffff !important;
             display: flex; justify-content: center; align-items: center;
         }
-
+        
         [data-testid="stAudioInput"] {
             margin: 0px auto;
         }
@@ -130,13 +143,13 @@ st.markdown("""
         }
         .custom-metric-label { color: #6c757d; font-size: 0.85rem; font-weight: 600; margin-bottom: 2px; }
         .custom-metric-value { color: #31333F; font-size: 1.1rem; font-weight: 700; word-wrap: break-word; }
-
+        
         div[data-testid="stSidebar"], [data-testid="collapsedControl"] { display: none !important; }
         h3 { margin-top: 5px !important; padding-bottom: 2px !important; font-size: 1.2rem !important; text-align: center; }
-
+        
         .stTabs [data-baseweb="tab-list"] { gap: 10px; justify-content: center; }
         .stTabs [data-baseweb="tab"] { padding: 5px 15px; font-size: 1rem; }
-
+        
         .stAlert { padding: 0.5rem !important; }
     </style>
 """, unsafe_allow_html=True)
@@ -149,8 +162,37 @@ query_params = st.query_params
 if "access_token" in query_params or "type" in query_params:
     st.session_state['user_authenticated'] = True
 
+# ================= HÀM XỬ LÝ DỮ LIỆU, API VÀ GIỚI HẠN LƯỢT =================
+def check_and_update_limit():
+    try:
+        res = supabase.auth.get_user()
+        if not res or not res.user:
+            return True, ""
+        
+        user = res.user
+        meta = user.user_metadata or {}
+        today = datetime.now().strftime("%Y-%m-%d")
+        
+        last_date = meta.get("last_date", "")
+        count = meta.get("usage_count", 0)
+        
+        if last_date != today:
+            count = 0
+            
+        if count >= 100:
+            return False, "⏳ Tài khoản đã sử dụng hết 100 lượt kiểm tra hôm nay. Vui lòng quay lại vào ngày mai!"
+            
+        new_count = count + 1
+        supabase.auth.update_user({
+            "data": {
+                "last_date": today,
+                "usage_count": new_count
+            }
+        })
+        return True, f"Tài khoản của bạn còn {100 - new_count} lượt kiểm tra miễn phí trong ngày."
+    except Exception as e:
+        return True, "" # Nếu mất kết nối metadata, tạm thời bỏ qua để không làm đứng hệ thống
 
-# ================= HÀM XỬ LÝ DỮ LIỆU VÀ API =================
 def check_song_in_local_file(song_title, file_path):
     if not os.path.exists(file_path):
         return False, f"⚠️ Không tìm thấy tệp `{file_path}`."
@@ -172,7 +214,6 @@ def check_song_in_local_file(song_title, file_path):
     except Exception as e:
         return False, f"⚠️ Lỗi đọc tệp: {e}"
 
-
 def recognize_acrcloud(file_path):
     http_method = "POST"
     http_uri = "/v1/identify"
@@ -180,8 +221,7 @@ def recognize_acrcloud(file_path):
     signature_version = "1"
     timestamp = str(int(time.time()))
     string_to_sign = '\n'.join([http_method, http_uri, ACR_ACCESS_KEY, data_type, signature_version, timestamp])
-    sign = base64.b64encode(hmac.new(ACR_ACCESS_SECRET.encode('ascii'), string_to_sign.encode('ascii'),
-                                     digestmod=hashlib.sha1).digest()).decode('ascii')
+    sign = base64.b64encode(hmac.new(ACR_ACCESS_SECRET.encode('ascii'), string_to_sign.encode('ascii'), digestmod=hashlib.sha1).digest()).decode('ascii')
     file_size = os.path.getsize(file_path)
     with open(file_path, 'rb') as f:
         files = {'sample': f}
@@ -191,7 +231,6 @@ def recognize_acrcloud(file_path):
         }
         res = requests.post(f"https://{ACR_HOST}{http_uri}", files=files, data=data)
     return res.json()
-
 
 def display_result_and_check(result):
     status_code = result.get("status", {}).get("code")
@@ -203,23 +242,19 @@ def display_result_and_check(result):
         st.markdown("### 🎧 KẾT QUẢ")
         col1, col2 = st.columns(2)
         with col1:
-            st.markdown(
-                f'<div class="custom-metric-container"><div class="custom-metric-label">📌 Tên bài hát</div><div class="custom-metric-value">{song_title}</div></div>',
-                unsafe_allow_html=True)
+            st.markdown(f'<div class="custom-metric-container"><div class="custom-metric-label">📌 Tên bài hát</div><div class="custom-metric-value">{song_title}</div></div>', unsafe_allow_html=True)
         with col2:
-            st.markdown(
-                f'<div class="custom-metric-container"><div class="custom-metric-label">🎤 Nghệ sĩ</div><div class="custom-metric-value">{artist_names}</div></div>',
-                unsafe_allow_html=True)
+            st.markdown(f'<div class="custom-metric-container"><div class="custom-metric-label">🎤 Nghệ sĩ</div><div class="custom-metric-value">{artist_names}</div></div>', unsafe_allow_html=True)
 
         found, msg = check_song_in_local_file(song_title, "Nhạc BẢN QUYỀN.xlsx")
-
+        
         if found:
             st.success(msg)
             st.balloons()
         else:
             st.error(msg)
     elif status_code in [3014, 3003]:
-        st.error("⏳ Hết lượt nhận diện miễn phí hôm nay!")
+        st.error("⏳ Hệ thống ACRCloud báo hết lượt nhận diện trong ngày!")
     else:
         st.warning("⚠️ Không nhận diện được. Giai điệu ồn hoặc chưa đủ dài!")
 
@@ -228,9 +263,9 @@ def display_result_and_check(result):
 
 if not st.session_state['user_authenticated']:
     st.markdown("<div class='title-text'>ĐĂNG NHẬP HỆ THỐNG</div>", unsafe_allow_html=True)
-
+    
     tab_login, tab_register = st.tabs(["🔐 Đăng Nhập", "📝 Đăng Ký"])
-
+    
     with tab_login:
         email_login = st.text_input("Email", key="login_email")
         pass_login = st.text_input("Mật khẩu", type="password", key="login_pass")
@@ -239,6 +274,9 @@ if not st.session_state['user_authenticated']:
                 try:
                     res = supabase.auth.sign_in_with_password({"email": email_login, "password": pass_login})
                     st.session_state['user_authenticated'] = True
+                    # Lưu lại token để không bị mất phiên kết nối Supabase
+                    st.session_state['access_token'] = res.session.access_token
+                    st.session_state['refresh_token'] = res.session.refresh_token
                     st.rerun()
                 except Exception:
                     st.error("❌ Thông tin không chính xác hoặc chưa xác thực email!")
@@ -259,14 +297,14 @@ if not st.session_state['user_authenticated']:
                 st.warning("Mật khẩu tối thiểu 6 ký tự.")
 
 else:
-    # Chia cột để dồn nút Đăng xuất sang góc phải
     col_empty, col_logout = st.columns([7, 2])
     with col_logout:
-        # BỎ use_container_width=True để khung nút ôm vừa khít vào chữ
         if st.button("🚪 ĐĂNG XUẤT", type="secondary"):
             supabase.auth.sign_out()
             st.session_state['user_authenticated'] = False
-            st.query_params.clear()
+            st.session_state.pop('access_token', None)
+            st.session_state.pop('refresh_token', None)
+            st.query_params.clear() 
             st.rerun()
 
     st.markdown("<div class='title-text'>KIỂM TRA BẢN QUYỀN ÂM NHẠC</div>", unsafe_allow_html=True)
@@ -277,35 +315,41 @@ else:
         audio_bytes = st.audio_input("Bấm biểu tượng Micro để ghi âm (5-10s)")
         if audio_bytes:
             if st.button("🚀 PHÂN TÍCH GIAI ĐIỆU", type="primary", use_container_width=True):
-                with st.spinner("Đang truy vấn dữ liệu..."):
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
-                        tmp_file.write(audio_bytes.read())
-                        temp_path = tmp_file.name
-                    try:
-                        result = recognize_acrcloud(temp_path)
-                        display_result_and_check(result)
-                    finally:
-                        if os.path.exists(temp_path):
-                            try:
-                                os.remove(temp_path)
-                            except:
-                                pass
+                can_use, msg = check_and_update_limit()
+                if not can_use:
+                    st.error(msg)
+                else:
+                    with st.spinner("Đang truy vấn dữ liệu..."):
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+                            tmp_file.write(audio_bytes.read())
+                            temp_path = tmp_file.name
+                        try:
+                            result = recognize_acrcloud(temp_path)
+                            display_result_and_check(result)
+                            if msg: st.info(f"💡 {msg}")
+                        finally:
+                            if os.path.exists(temp_path):
+                                try: os.remove(temp_path)
+                                except: pass
 
     with tab2:
         uploaded_audio = st.file_uploader("Kéo thả hoặc chọn tệp (MP3, WAV...)", type=['mp3', 'wav', 'm4a', 'mp4'])
         if uploaded_audio is not None:
             if st.button("🚀 KIỂM TRA TỆP", type="primary", use_container_width=True):
-                with st.spinner("Đang phân tích tệp..."):
-                    file_ext = os.path.splitext(uploaded_audio.name)[1]
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
-                        tmp_file.write(uploaded_audio.read())
-                        temp_path = tmp_file.name
-                    try:
-                        result = recognize_acrcloud(temp_path)
-                        display_result_and_check(result)
-                    finally:
-                        if os.path.exists(temp_path):
-                            try:
-                                os.remove(temp_path)
-                            except:
-                                pass
+                can_use, msg = check_and_update_limit()
+                if not can_use:
+                    st.error(msg)
+                else:
+                    with st.spinner("Đang phân tích tệp..."):
+                        file_ext = os.path.splitext(uploaded_audio.name)[1]
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
+                            tmp_file.write(uploaded_audio.read())
+                            temp_path = tmp_file.name
+                        try:
+                            result = recognize_acrcloud(temp_path)
+                            display_result_and_check(result)
+                            if msg: st.info(f"💡 {msg}")
+                        finally:
+                            if os.path.exists(temp_path):
+                                try: os.remove(temp_path)
+                                except: pass
