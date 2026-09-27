@@ -208,7 +208,7 @@ def check_song_in_local_file(song_title, file_path):
                 matched_column = str(col)
                 break
         if matched:
-            return True, f"✅ Hợp lệ: **'{song_title}'** nằm trong Cột: {matched_column}."
+            return True, f"✅ Hợp lệ: **'{song_title}'** nằm trong phần nhạc BẢN QUYỀN."
         else:
             return False, f"❌ Bản nhạc **không** thuộc hệ thống bản quyền."
     except Exception as e:
